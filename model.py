@@ -100,7 +100,15 @@ def evaluate_model(model, test_loader, device):
     
     return rmse
 
-def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
+def train_model(epochs=10, batch_size=512, learning_rate=0.001, device=None):
+    """
+    Train the Hacker News model
+    Args:
+        epochs: Number of training epochs
+        batch_size: Number of examples per batch (default: 512 for 16GB GPU), otherwise 32 to aviod memory error
+        learning_rate: Learning rate for optimizer
+        device: Device to train on (GPU/CPU)
+    """
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
@@ -116,7 +124,7 @@ def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
     train_dataset = HackerNewsDataset(X_train, y_train, word_vectors)
     test_dataset = HackerNewsDataset(X_test, y_test, word_vectors)
     
-    # Create data loaders
+    # Create data loaders with larger batch size for GPU efficiency
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
@@ -146,7 +154,7 @@ def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
             
             total_loss += loss.item()
             
-            if batch_idx % 100 == 0:
+            if batch_idx % 100 == 0:  # Reduced logging frequency due to larger batch size
                 logging.info(f'Epoch: {epoch+1}/{epochs}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}')
         
         # Validation
@@ -177,5 +185,5 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logging.info(f"Using device: {device}")
     
-    # Train the model
-    model = train_model(epochs=10, batch_size=32, learning_rate=0.001, device=device) 
+    # Train the model with larger batch size for GPU efficiency
+    model = train_model(epochs=10, batch_size=512, learning_rate=0.001, device=device) 
