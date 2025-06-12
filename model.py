@@ -1,156 +1,185 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from gensim.models import Word2Vec
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
-from database import prepare_data_streaming, get_batch
-import re
 import logging
+from word_embeddings import load_word_vectors
+from database import load_data, prepare_data
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(format='%(asctime)s : %(levelname)s : %(message)s', level=logging.INFO)
 
-# Check if CUDA is available
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-logging.info(f"Using device: {device}")
+class HackerNewsDataset(Dataset):
+    def __init__(self, titles, scores, word_vectors):
+        self.titles = titles
+        self.scores = scores
+        self.word_vectors = word_vectors
+        
+    def __len__(self):
+        return len(self.titles)
+    
+    def __getitem__(self, idx):
+        title = self.titles[idx]
+        score = self.scores[idx]
+        
+        # Convert title to embedding
+        words = title.lower().split()
+        word_embeddings = []
+        for word in words:
+            if word in self.word_vectors:
+                word_embeddings.append(self.word_vectors[word])
+        
+        if word_embeddings:
+            # Stack embeddings and take mean
+            title_embedding = torch.stack(word_embeddings).mean(dim=0)
+        else:
+            # If no valid words, use zero vector
+            title_embedding = torch.zeros_like(next(iter(self.word_vectors.values())))
+        
+        return title_embedding, torch.tensor(score, dtype=torch.float)
 
 class HackerNewsModel(nn.Module):
-    def __init__(self, word_embedding_dim, num_urls, num_authors, url_embedding_dim=10, author_embedding_dim=10):
+    def __init__(self, input_size):
         super(HackerNewsModel, self).__init__()
-        
-        # URL and Author embeddings
-        self.url_embedding = nn.Embedding(num_urls + 1, url_embedding_dim)  # +1 for unknown
-        self.author_embedding = nn.Embedding(num_authors + 1, author_embedding_dim)  # +1 for unknown
-        
-        # Title embeddings will be pre-computed using Word2Vec
-        
-        # Final layers
-        total_embedding_dim = word_embedding_dim + url_embedding_dim + author_embedding_dim
-        self.fc1 = nn.Linear(total_embedding_dim, 128)
-        self.fc2 = nn.Linear(128, 64)
-        self.fc3 = nn.Linear(64, 1)
-        
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(0.2)
+        self.network = nn.Sequential(
+            nn.Linear(input_size, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, 1)
+        )
     
-    def forward(self, title_emb, url_idx, author_idx):
-        url_emb = self.url_embedding(url_idx)
-        author_emb = self.author_embedding(author_idx)
-        
-        # Concatenate all embeddings
-        combined = torch.cat([title_emb, url_emb, author_emb], dim=1)
-        
-        # Forward pass through fully connected layers
-        x = self.relu(self.fc1(combined))
-        x = self.dropout(x)
-        x = self.relu(self.fc2(x))
-        x = self.dropout(x)
-        x = self.fc3(x)
-        
-        return x
+    def forward(self, x):
+        return self.network(x)
 
-def preprocess_title(title, word2vec_model):
-    # Tokenize and clean the title
-    words = re.findall(r'\b\w+\b', title.lower())
+def evaluate_model(model, test_loader, device):
+    model.eval()
+    all_predictions = []
+    all_targets = []
+    all_titles = []
     
-    # Get word vectors and average them
-    word_vectors = []
-    for word in words:
-        try:
-            word_vectors.append(word2vec_model.wv[word])
-        except KeyError:
-            continue
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            all_predictions.extend(outputs.squeeze().cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
     
-    if not word_vectors:
-        return np.zeros(word2vec_model.vector_size)
+    # Convert to numpy arrays
+    predictions = np.array(all_predictions)
+    targets = np.array(all_targets)
     
-    return np.mean(word_vectors, axis=0)
+    # Calculate metrics
+    mse = np.mean((predictions - targets) ** 2)
+    rmse = np.sqrt(mse)
+    mae = np.mean(np.abs(predictions - targets))
+    
+    # Calculate percentage of predictions within different error ranges
+    error_ranges = {
+        '±0.1': np.mean(np.abs(predictions - targets) <= 0.1) * 100,
+        '±0.2': np.mean(np.abs(predictions - targets) <= 0.2) * 100,
+        '±0.5': np.mean(np.abs(predictions - targets) <= 0.5) * 100,
+        '±1.0': np.mean(np.abs(predictions - targets) <= 1.0) * 100
+    }
+    
+    # Get some example predictions
+    indices = np.random.choice(len(predictions), min(5, len(predictions)), replace=False)
+    examples = [(predictions[i], targets[i]) for i in indices]
+    
+    # Print evaluation metrics
+    logging.info("\nModel Evaluation Metrics:")
+    logging.info(f"Root Mean Square Error (RMSE): {rmse:.4f}")
+    logging.info(f"Mean Absolute Error (MAE): {mae:.4f}")
+    logging.info("\nPercentage of predictions within error ranges:")
+    for range_name, percentage in error_ranges.items():
+        logging.info(f"Within {range_name}: {percentage:.2f}%")
+    
+    logging.info("\nExample Predictions (Predicted vs Actual):")
+    for pred, actual in examples:
+        logging.info(f"Predicted: {pred:.2f}, Actual: {actual:.2f}, Difference: {abs(pred - actual):.2f}")
+    
+    return rmse, mae
 
-def train_model():
-    # Get data generators and mappings
-    train_gen, test_gen, url_mapping, author_mapping = prepare_data_streaming()
+def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f"Using device: {device}")
     
-    # Load Word2Vec model
-    word2vec_model = Word2Vec.load('word2vec_model.bin')
+    # Load data
+    data = load_data()
+    X_train, X_test, y_train, y_test = prepare_data(data)
+    
+    # Load word vectors
+    word_vectors = load_word_vectors(device)
+    
+    # Create datasets
+    train_dataset = HackerNewsDataset(X_train, y_train, word_vectors)
+    test_dataset = HackerNewsDataset(X_test, y_test, word_vectors)
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size)
     
     # Initialize model
-    model = HackerNewsModel(
-        word_embedding_dim=word2vec_model.vector_size,
-        num_urls=len(url_mapping),
-        num_authors=len(author_mapping)
-    ).to(device)
+    input_size = next(iter(word_vectors.values())).size(0)
+    model = HackerNewsModel(input_size).to(device)
     
+    # Loss function and optimizer
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters())
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
     # Training loop
-    num_epochs = 500
-    for epoch in range(num_epochs):
-        epoch_loss = 0
-        num_batches = 0
-        
-        # Process each chunk from the training generator
-        for train_chunk in train_gen:
-            # Get batch from the chunk
-            batch_df = get_batch(train_chunk, batch_size=0.10)
-            
-            # Prepare batch data
-            title_embs = torch.FloatTensor([
-                preprocess_title(title, word2vec_model)
-                for title in batch_df['title']
-            ]).to(device)
-            
-            url_indices = torch.LongTensor([
-                url_mapping.get(url, url_mapping['UNKNOWN_URL'])
-                for url in batch_df['url']
-            ]).to(device)
-            
-            author_indices = torch.LongTensor([
-                author_mapping.get(author, author_mapping['UNKNOWN_AUTHOR'])
-                for author in batch_df['author']
-            ]).to(device)
-            
-            targets = torch.FloatTensor(batch_df['log_10_score'].values).view(-1, 1).to(device)
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        for batch_idx, (inputs, targets) in enumerate(train_loader):
+            inputs, targets = inputs.to(device), targets.to(device)
             
             # Forward pass
-            outputs = model(title_embs, url_indices, author_indices)
-            loss = criterion(outputs, targets)
+            outputs = model(inputs)
+            loss = criterion(outputs.squeeze(), targets)
             
             # Backward pass and optimize
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
-            epoch_loss += loss.item()
-            num_batches += 1
+            total_loss += loss.item()
             
-            # Clean up
-            del title_embs, url_indices, author_indices, targets, outputs
-            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+            if batch_idx % 100 == 0:
+                logging.info(f'Epoch: {epoch+1}/{epochs}, Batch: {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}')
         
-        # Print progress
-        if (epoch + 1) % 50 == 0:
-            avg_loss = epoch_loss / num_batches
-            logging.info(f'Epoch [{epoch+1}/{num_epochs}], Average Loss: {avg_loss:.4f}')
-            
-            # Find top 5 words similar to "computer"
-            if (epoch + 1) % 500 == 0:
-                try:
-                    similar_words = word2vec_model.wv.most_similar('computer', topn=5)
-                    logging.info("\nTop 5 words similar to 'computer':")
-                    for word, similarity in similar_words:
-                        logging.info(f"{word}: {similarity:.4f}")
-                except KeyError:
-                    logging.info("Word 'computer' not found in vocabulary")
+        # Validation
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for inputs, targets in test_loader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                outputs = model(inputs)
+                val_loss += criterion(outputs.squeeze(), targets).item()
+        
+        avg_train_loss = total_loss / len(train_loader)
+        avg_val_loss = val_loss / len(test_loader)
+        logging.info(f'Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}')
+    
+    # Final evaluation
+    logging.info("\nFinal Model Evaluation:")
+    rmse, mae = evaluate_model(model, test_loader, device)
     
     # Save the model
     torch.save(model.state_dict(), 'hackernews_model.pth')
+    logging.info("Model saved as 'hackernews_model.pth'")
+    
     return model
 
 if __name__ == "__main__":
-    try:
-        model = train_model()
-        logging.info("Training completed successfully")
-    except Exception as e:
-        logging.error(f"Error during training: {e}")
-        raise 
+    # Check if CUDA is available
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    logging.info(f"Using device: {device}")
+    
+    # Train the model
+    model = train_model(epochs=10, batch_size=32, learning_rate=0.001, device=device) 
