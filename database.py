@@ -23,7 +23,6 @@ def load_data():
         df['day_of_week'] = pd.to_datetime(df['time']).dt.day_name()
         df['day_of_week_num'] = pd.to_datetime(df['time']).dt.dayofweek
         df['hour_of_day'] = pd.to_datetime(df['time']).dt.hour
-        df['log_10_score'] = np.log10(df['score'])
         
         logging.info(f"Loaded {len(df)} records")
         return df
@@ -32,10 +31,15 @@ def load_data():
         logging.error(f"Error loading data: {e}")
         raise
 
-def prepare_data(df,mini_count_url,mini_count_author):
+def prepare_data(df, mini_count_url=mini_count_url, mini_count_author=mini_count_author):
     """
     Prepare data for training
-    Returns train_df, test_df, url_mapping, author_mapping
+    Args:
+        df: DataFrame containing the data
+        mini_count_url: Minimum count for URLs to be included (default: 5)
+        mini_count_author: Minimum count for authors to be included (default: 5)
+    Returns:
+        X_train, X_test, y_train, y_test
     """
     try:
         # Split into train and test sets
@@ -54,7 +58,9 @@ def prepare_data(df,mini_count_url,mini_count_author):
         author_mapping['UNKNOWN_AUTHOR'] = len(author_mapping)
         
         logging.info(f"Created mappings for {len(url_mapping)} URLs and {len(author_mapping)} authors")
-        return train_df, test_df, url_mapping, author_mapping
+        
+        # Return the split data
+        return train_df['title'].values, test_df['title'].values, train_df['score'].values, test_df['score'].values
     
     except Exception as e:
         logging.error(f"Error preparing data: {e}")
@@ -64,12 +70,10 @@ if __name__ == "__main__":
     try:
         # Load and prepare data
         df = load_data()
-        train_df, test_df, url_mapping, author_mapping = prepare_data(df)
+        X_train, X_test, y_train, y_test = prepare_data(df)
         
-        print(f"Training set size: {len(train_df)}")
-        print(f"Test set size: {len(test_df)}")
-        print(f"Number of unique URLs: {len(url_mapping)}")
-        print(f"Number of unique authors: {len(author_mapping)}")
+        print(f"Training set size: {len(X_train)}")
+        print(f"Test set size: {len(X_test)}")
         
     except Exception as e:
         logging.error(f"Error in main: {e}")
