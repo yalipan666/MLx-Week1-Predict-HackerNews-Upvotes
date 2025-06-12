@@ -60,7 +60,6 @@ def evaluate_model(model, test_loader, device):
     model.eval()
     all_predictions = []
     all_targets = []
-    all_titles = []
     
     with torch.no_grad():
         for inputs, targets in test_loader:
@@ -73,17 +72,15 @@ def evaluate_model(model, test_loader, device):
     predictions = np.array(all_predictions)
     targets = np.array(all_targets)
     
-    # Calculate metrics
-    mse = np.mean((predictions - targets) ** 2)
-    rmse = np.sqrt(mse)
-    mae = np.mean(np.abs(predictions - targets))
+    # Calculate RMSE
+    rmse = np.sqrt(np.mean((predictions - targets) ** 2))
     
     # Calculate percentage of predictions within different error ranges
     error_ranges = {
-        '±0.1': np.mean(np.abs(predictions - targets) <= 0.1) * 100,
-        '±0.2': np.mean(np.abs(predictions - targets) <= 0.2) * 100,
-        '±0.5': np.mean(np.abs(predictions - targets) <= 0.5) * 100,
-        '±1.0': np.mean(np.abs(predictions - targets) <= 1.0) * 100
+        '±10': np.mean(np.abs(predictions - targets) <= 10) * 100,
+        '±20': np.mean(np.abs(predictions - targets) <= 20) * 100,
+        '±50': np.mean(np.abs(predictions - targets) <= 50) * 100,
+        '±100': np.mean(np.abs(predictions - targets) <= 100) * 100
     }
     
     # Get some example predictions
@@ -92,17 +89,16 @@ def evaluate_model(model, test_loader, device):
     
     # Print evaluation metrics
     logging.info("\nModel Evaluation Metrics:")
-    logging.info(f"Root Mean Square Error (RMSE): {rmse:.4f}")
-    logging.info(f"Mean Absolute Error (MAE): {mae:.4f}")
+    logging.info(f"Root Mean Square Error (RMSE): {rmse:.2f} points")
     logging.info("\nPercentage of predictions within error ranges:")
     for range_name, percentage in error_ranges.items():
-        logging.info(f"Within {range_name}: {percentage:.2f}%")
+        logging.info(f"Within {range_name} points: {percentage:.2f}%")
     
     logging.info("\nExample Predictions (Predicted vs Actual):")
     for pred, actual in examples:
-        logging.info(f"Predicted: {pred:.2f}, Actual: {actual:.2f}, Difference: {abs(pred - actual):.2f}")
+        logging.info(f"Predicted: {pred:.0f}, Actual: {actual:.0f}, Difference: {abs(pred - actual):.0f} points")
     
-    return rmse, mae
+    return rmse
 
 def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
     if device is None:
@@ -168,7 +164,7 @@ def train_model(epochs=10, batch_size=32, learning_rate=0.001, device=None):
     
     # Final evaluation
     logging.info("\nFinal Model Evaluation:")
-    rmse, mae = evaluate_model(model, test_loader, device)
+    rmse = evaluate_model(model, test_loader, device)
     
     # Save the model
     torch.save(model.state_dict(), 'hackernews_model.pth')

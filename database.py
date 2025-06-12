@@ -6,6 +6,10 @@ import logging
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# set parameters
+mini_count_url = 5
+mini_count_author = 5
+
 def load_data():
     """
     Load data from the parquet file
@@ -28,7 +32,7 @@ def load_data():
         logging.error(f"Error loading data: {e}")
         raise
 
-def prepare_data(df):
+def prepare_data(df,mini_count_url,mini_count_author):
     """
     Prepare data for training
     Returns train_df, test_df, url_mapping, author_mapping
@@ -42,8 +46,8 @@ def prepare_data(df):
         author_freq = df['author'].value_counts()
         
         # Create mappings for URLs and authors
-        url_mapping = {url: idx for idx, url in enumerate(url_freq[url_freq >= 50].index)}
-        author_mapping = {author: idx for idx, author in enumerate(author_freq[author_freq >= 5].index)}
+        url_mapping = {url: idx for idx, url in enumerate(url_freq[url_freq >= mini_count_url].index)}
+        author_mapping = {author: idx for idx, author in enumerate(author_freq[author_freq >= mini_count_author].index)}
         
         # Add unknown tokens
         url_mapping['UNKNOWN_URL'] = len(url_mapping)
