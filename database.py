@@ -39,11 +39,11 @@ def prepare_data(df, mini_count_url=mini_count_url, mini_count_author=mini_count
         mini_count_url: Minimum count for URLs to be included (default: 5)
         mini_count_author: Minimum count for authors to be included (default: 5)
     Returns:
-        X_train, X_test, y_train, y_test
+        X_train, X_test, y_train, y_test, url_mapping, author_mapping
     """
     try:
         # Split into train and test sets
-        train_df, test_df = train_test_split(df, test_size=0.2, random_state=42)
+        train_df, test_df = train_test_split(df, test_size=0.05, random_state=42)
         
         # Calculate URL and author frequencies
         url_freq = df['url'].value_counts()
@@ -57,10 +57,22 @@ def prepare_data(df, mini_count_url=mini_count_url, mini_count_author=mini_count
         url_mapping['UNKNOWN_URL'] = len(url_mapping)
         author_mapping['UNKNOWN_AUTHOR'] = len(author_mapping)
         
+        # Convert URLs and authors to indices
+        train_urls = train_df['url'].map(lambda x: url_mapping.get(x, url_mapping['UNKNOWN_URL']))
+        test_urls = test_df['url'].map(lambda x: url_mapping.get(x, url_mapping['UNKNOWN_URL']))
+        train_authors = train_df['author'].map(lambda x: author_mapping.get(x, author_mapping['UNKNOWN_AUTHOR']))
+        test_authors = test_df['author'].map(lambda x: author_mapping.get(x, author_mapping['UNKNOWN_AUTHOR']))
+        
         logging.info(f"Created mappings for {len(url_mapping)} URLs and {len(author_mapping)} authors")
         
-        # Return the split data
-        return train_df['title'].values, test_df['title'].values, train_df['score'].values, test_df['score'].values
+        # Return the split data with URL and author information
+        return (
+            train_df['title'].values, test_df['title'].values,
+            train_urls.values, test_urls.values,
+            train_authors.values, test_authors.values,
+            train_df['score'].values, test_df['score'].values,
+            url_mapping, author_mapping
+        )
     
     except Exception as e:
         logging.error(f"Error preparing data: {e}")
@@ -70,7 +82,7 @@ if __name__ == "__main__":
     try:
         # Load and prepare data
         df = load_data()
-        X_train, X_test, y_train, y_test = prepare_data(df)
+        X_train, X_test, y_train, y_test, url_mapping, author_mapping = prepare_data(df)
         
         print(f"Training set size: {len(X_train)}")
         print(f"Test set size: {len(X_test)}")
